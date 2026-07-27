@@ -12,13 +12,25 @@ $StdoutPath = Join-Path $Root "launcher.out.log"
 $StderrPath = Join-Path $Root "launcher.err.log"
 $PidFile = Join-Path $MonkHome "agent\launcher\run\monk-agent.pid"
 
+# Strips ANSI/VT100 escape sequences (color, cursor movement) from captured
+# process output. PowerShell 7's Write-Error formatting emits these by
+# default; on some hosts (observed on windows-latest runners) that formatting
+# also wraps/re-colors long lines, splitting a literal substring like
+# "within 2s" across escape codes so a plain -match against the raw text
+# silently fails even though the launcher reported the right thing.
+function Strip-AnsiCodes {
+  param([string]$Text)
+  return [regex]::Replace($Text, "`e\[[0-9;]*[A-Za-z]", "")
+}
+
 $EnvironmentNames = @(
   "MONK_AGENT_HOME",
   "MONK_AGENT_PATH",
   "MONK_AGENT_PORT",
   "MONK_AGENT_READY_TIMEOUT",
   "MONK_AGENT_SKIP_ENSURE",
-  "MONK_AGENT_SKIP_SIGNIN_NUDGE"
+  "MONK_AGENT_SKIP_SIGNIN_NUDGE",
+  "NO_COLOR"
 )
 $OriginalEnvironment = @{}
 foreach ($Name in $EnvironmentNames) {
@@ -56,6 +68,10 @@ class Program { static void Main(string[] args) { Thread.Sleep(TimeSpan.FromSeco
   $env:MONK_AGENT_READY_TIMEOUT = "2"
   $env:MONK_AGENT_SKIP_ENSURE = "1"
   $env:MONK_AGENT_SKIP_SIGNIN_NUDGE = "1"
+  # Belt: ask the child to skip ANSI formatting outright (respected by
+  # PowerShell 7.2+). The output is also sanitized below regardless, since
+  # NO_COLOR support isn't guaranteed on every host/version this test runs on.
+  $env:NO_COLOR = "1"
 
   $LauncherPath = Join-Path $Repo "scripts\start-monk-agent.ps1"
   $Timer = [Diagnostics.Stopwatch]::StartNew()
@@ -71,8 +87,8 @@ class Program { static void Main(string[] args) { Thread.Sleep(TimeSpan.FromSeco
   }
 
   Start-Sleep -Milliseconds 200
-  $Output = (Get-Content -Raw $StdoutPath -ErrorAction SilentlyContinue) +
-    (Get-Content -Raw $StderrPath -ErrorAction SilentlyContinue)
+  $Output = Strip-AnsiCodes ((Get-Content -Raw $StdoutPath -ErrorAction SilentlyContinue) +
+    (Get-Content -Raw $StderrPath -ErrorAction SilentlyContinue))
   if ($Launcher.ExitCode -ne 1) {
     throw "expected launcher exit 1, got $($Launcher.ExitCode): $Output"
   }
