@@ -7,6 +7,16 @@ $AuthClientId = if ($env:MONK_AGENT_AUTH_CLIENT_ID) { $env:MONK_AGENT_AUTH_CLIEN
 $AuthAudience = if ($env:MONK_AUTH_AUDIENCE) { $env:MONK_AUTH_AUDIENCE } else { "oaknode.com" }
 $AutospinUrl = if ($env:MONK_AUTOSPIN_URL) { $env:MONK_AUTOSPIN_URL } else { "wss://api.app.monk.io/autospin/" }
 
+# Host hooks terminate this launcher after 180 seconds. Reserve enough time for
+# this script to emit its own startup diagnostics instead of being killed
+# mid-wait (ENG-410).
+$ReadyTimeoutSec = 150
+$RequestedReadyTimeout = 0
+if ($env:MONK_AGENT_READY_TIMEOUT -and
+    [int]::TryParse($env:MONK_AGENT_READY_TIMEOUT, [ref]$RequestedReadyTimeout)) {
+  $ReadyTimeoutSec = [Math]::Max(1, [Math]::Min(150, $RequestedReadyTimeout))
+}
+
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $PluginRoot = if ($env:CLAUDE_PLUGIN_ROOT) { $env:CLAUDE_PLUGIN_ROOT } else { Split-Path -Parent $ScriptDir }
 $InstallDir = if ($env:MONK_AGENT_INSTALL_DIR) { $env:MONK_AGENT_INSTALL_DIR } else { Join-Path $HOME ".monk\bin" }
@@ -27,7 +37,17 @@ $RunDir = Join-Path $DataDir "run"
 $LogOut = Join-Path $LogDir "monk-agent.out.log"
 $LogErr = Join-Path $LogDir "monk-agent.err.log"
 $PidFile = Join-Path $RunDir "monk-agent.pid"
-$HealthUrl = "http://${AgentHost}:$Port/.well-known/oauth-protected-resource"
+$StateFile = Join-Path $RunDir "monk-agent.state"
+# IPv6 loopback hosts (e.g. ::1, an explicit MONK_AGENT_HOST override) must be
+# bracketed in a URL authority or the port separator is ambiguous.
+$UrlHost = if ($AgentHost.Contains(":") -and -not ($AgentHost.StartsWith("[") -and $AgentHost.EndsWith("]"))) {
+  "[$AgentHost]"
+} else {
+  $AgentHost
+}
+$BaseUrl = "http://${UrlHost}:$Port"
+$HealthUrl = "$BaseUrl/.well-known/oauth-protected-resource"
+$HealthResource = "$BaseUrl/mcp"
 
 New-Item -ItemType Directory -Force -Path $LogDir, $RunDir | Out-Null
 
@@ -49,8 +69,12 @@ $IdeVersion = if ($env:CURSOR_VERSION) { $env:CURSOR_VERSION } else { "" }
 
 function Test-AgentRunning {
   try {
-    $Response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 2
-    return $Response.Content -match '"resource"'
+    $Response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 2 -NoProxy
+    # Require the resource field to equal our own MCP endpoint, not merely be
+    # present — an unrelated service on the same port could otherwise be
+    # mistaken for monk-agent.
+    $Document = $Response.Content | ConvertFrom-Json -ErrorAction Stop
+    return [string]$Document.resource -ceq $HealthResource
   } catch {
     return $false
   }
@@ -71,7 +95,7 @@ function Show-SigninNudge {
   # /status.json, which runs ~10 synchronous install probes (~2s/call and
   # serializes under concurrent dashboard/MCP load) — that latency made this
   # check racy against a cold, signed-out agent.
-  $StatusUrl = "http://${AgentHost}:$Port/auth.json"
+  $StatusUrl = "$BaseUrl/auth.json"
   # A just-(re)started agent can still report a transient MISS on the first probe
   # (connection refused during the restart window, or a 500 from a cold DPAPI
   # read the agent itself retries then surfaces as an error rather than a false
@@ -84,7 +108,7 @@ function Show-SigninNudge {
   $Body = ""
   for ($Attempt = 0; $Attempt -lt 3; $Attempt++) {
     try {
-      $Response = Invoke-WebRequest -Uri $StatusUrl -UseBasicParsing -TimeoutSec 5
+      $Response = Invoke-WebRequest -Uri $StatusUrl -UseBasicParsing -TimeoutSec 5 -NoProxy
       $Body = $Response.Content
     } catch {
       $Body = ""
@@ -115,7 +139,7 @@ function Show-SigninNudge {
   }
   # $Client is resolved once at the top of the script (Cursor-aware ordering).
   try {
-    Invoke-RestMethod -Uri "http://${AgentHost}:$Port/plugin/nudge?type=signin&client=$Client" -Method Post -TimeoutSec 2 | Out-Null
+    Invoke-RestMethod -Uri "$BaseUrl/plugin/nudge?type=signin&client=$Client" -Method Post -TimeoutSec 2 -NoProxy | Out-Null
   } catch {
   }
   $Msg = "monk-agent is running but you are NOT signed in to Monk. The Monk MCP tools require sign-in. If the user asks to deploy, analyze, or operate anything with Monk, first tell them to run /mcp and authenticate the monk MCP server (this signs them in to Monk). Do NOT describe this as a connection or restart problem, and do NOT deploy via Docker or another platform to work around it."
@@ -216,7 +240,8 @@ try {
 }
 
 $ManagedAgentPath = Join-Path $InstallDir "monk-agent.exe"
-$AgentHashBefore = Get-FileSha256 $ManagedAgentPath
+$AgentHashBefore = ""
+$ManagedAgentEnsured = $false
 
 if (Get-Command Invoke-MonkLauncherEvent -ErrorAction SilentlyContinue) {
   Invoke-MonkLauncherEvent -Client $Client -IdeVersion $IdeVersion
@@ -227,12 +252,20 @@ if ($env:MONK_AGENT_PATH) {
 } elseif ($env:MONK_AGENT_SKIP_ENSURE -eq "1") {
   $AgentPath = $ManagedAgentPath
 } else {
+  # Only the managed install can have been updated by ensure-monk-agent.ps1,
+  # so only compute a before/after hash on that path. Hashing the managed
+  # binary's "before" state against a custom MONK_AGENT_PATH's "after" state
+  # compares two unrelated files -- they always differ, so AgentUpdated was
+  # always true and every session force-restarted a healthy custom companion
+  # (ENG-390).
+  $AgentHashBefore = Get-FileSha256 $ManagedAgentPath
   $EnsureScript = Join-Path $PluginRoot "scripts\ensure-monk-agent.ps1"
   if (-not (Test-Path $EnsureScript)) {
     Write-Error "monk-agent installer not found at $EnsureScript"
     exit 2
   }
   $AgentPath = (& $EnsureScript | Select-Object -Last 1)
+  $ManagedAgentEnsured = $true
 }
 
 $AgentPath = [string]$AgentPath
@@ -241,10 +274,41 @@ if (-not (Test-Path $AgentPath)) {
   exit 2
 }
 
-$AgentHashAfter = Get-FileSha256 $AgentPath
-$AgentUpdated = $AgentHashAfter -and ($AgentHashBefore -ne $AgentHashAfter)
+$AgentUpdated = $false
+if ($ManagedAgentEnsured) {
+  $AgentHashAfter = Get-FileSha256 $AgentPath
+  $AgentUpdated = $AgentHashAfter -and ($AgentHashBefore -ne $AgentHashAfter)
+}
 
-if (-not $AgentUpdated -and (Test-AgentRunning)) {
+# There is no launchd-style config store to introspect on Windows, so the
+# fields that matter for reuse are persisted to $StateFile on every start and
+# diffed here. Covers both a stale custom MONK_AGENT_PATH and drifted
+# auth/autospin config on an otherwise-healthy companion (ENG-390, ENG-397).
+function Test-BackgroundStateConfigured {
+  if (-not (Test-Path $StateFile)) {
+    return $false
+  }
+  $State = Get-Content -Raw $StateFile -ErrorAction SilentlyContinue
+  if (-not $State) {
+    return $false
+  }
+  $Expected = @(
+    "agent_path=$AgentPath",
+    "auth_url=$AuthUrl",
+    "auth_client_id=$AuthClientId",
+    "auth_audience=$AuthAudience",
+    "autospin_url=$AutospinUrl"
+  )
+  $Lines = $State -split "`r?`n"
+  foreach ($Line in $Expected) {
+    if (-not ($Lines -ccontains $Line)) {
+      return $false
+    }
+  }
+  return $true
+}
+
+if (-not $AgentUpdated -and (Test-BackgroundStateConfigured) -and (Test-AgentRunning)) {
   Show-SigninNudge
   exit 0
 }
@@ -270,8 +334,16 @@ $Process = Start-Process `
   -RedirectStandardError $LogErr
 
 $Process.Id | Set-Content -NoNewline $PidFile
+@(
+  "agent_path=$AgentPath",
+  "auth_url=$AuthUrl",
+  "auth_client_id=$AuthClientId",
+  "auth_audience=$AuthAudience",
+  "autospin_url=$AutospinUrl"
+) -join "`n" | Set-Content -NoNewline $StateFile
 
-for ($Attempt = 0; $Attempt -lt 180; $Attempt++) {
+$ReadyTimer = [System.Diagnostics.Stopwatch]::StartNew()
+while ($ReadyTimer.Elapsed.TotalSeconds -lt $ReadyTimeoutSec) {
   if (Test-AgentRunning) {
     Show-SigninNudge
     exit 0
@@ -282,5 +354,5 @@ for ($Attempt = 0; $Attempt -lt 180; $Attempt++) {
   Start-Sleep -Seconds 1
 }
 
-Write-Error "monk-agent did not become ready at $HealthUrl within 180s. Logs: $LogOut, $LogErr"
+Write-Error "monk-agent did not become ready at $HealthUrl within ${ReadyTimeoutSec}s. Logs: $LogOut, $LogErr"
 exit 1
