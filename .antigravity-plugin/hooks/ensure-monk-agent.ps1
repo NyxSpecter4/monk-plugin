@@ -28,6 +28,20 @@ $UrlHost = if ($AgentHost.Contains(":") -and -not ($AgentHost.StartsWith("[") -a
 $HealthUrl = "http://${UrlHost}:$Port/.well-known/oauth-protected-resource"
 $HealthResource = "http://${UrlHost}:$Port/mcp"
 
+# Proxy-bypass argument for the loopback probe, splatted so the flag is only passed
+# where it exists. See the long comment in scripts/start-monk-agent.ps1 for why
+# -NoProxy (PowerShell 6+ only) must not be passed unconditionally, and why omitting
+# it under Windows PowerShell 5.1 does not reintroduce plugin#8 (ENG-469). Unlike the
+# launcher, this hook deliberately does NOT escalate a usage error: it is a PreInvocation
+# hook contracted never to throw (see the header), so the check.ts guard is the only
+# regression net here. The symptom it was hiding was worse than the launcher's — this
+# hook fires per model step, so a permanently-false probe spawned a duplicate
+# `monk-agent serve` and injected a bogus "did not become ready" message every step.
+$ProxyArgs = @{}
+if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("NoProxy")) {
+  $ProxyArgs["NoProxy"] = $true
+}
+
 function Write-Json {
   param([object]$Object)
   $Object | ConvertTo-Json -Compress -Depth 6 | Write-Output
@@ -35,7 +49,7 @@ function Write-Json {
 
 function Test-AgentRunning {
   try {
-    $Response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 2 -NoProxy
+    $Response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 2 @ProxyArgs
     # Require the resource field to equal our own MCP endpoint, not merely be
     # present — an unrelated service on the same port could otherwise be
     # mistaken for monk-agent.

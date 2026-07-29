@@ -75,8 +75,15 @@ class Program { static void Main(string[] args) { Thread.Sleep(TimeSpan.FromSeco
 
   $LauncherPath = Join-Path $Repo "scripts\start-monk-agent.ps1"
   $Timer = [Diagnostics.Stopwatch]::StartNew()
+  # -NoProfile means $ErrorView can't be preset via a profile, and pwsh 7's
+  # default "ConciseView" error formatter word-wraps long error lines to the
+  # console width, which can split a literal substring like "within 2s"
+  # across a line break (observed on windows-latest runners). Force the
+  # unwrapped NormalView via -Command so the captured text is a single
+  # contiguous line instead of guessing at every possible wrap point.
+  $ChildCommand = "`$ErrorView = 'NormalView'; & '$LauncherPath'"
   $Launcher = Start-Process -FilePath (Get-Process -Id $PID).Path `
-    -ArgumentList @("-NoLogo", "-NoProfile", "-File", $LauncherPath) `
+    -ArgumentList @("-NoLogo", "-NoProfile", "-Command", $ChildCommand) `
     -PassThru -RedirectStandardOutput $StdoutPath -RedirectStandardError $StderrPath
   $Finished = $Launcher.WaitForExit(15000)
   $Timer.Stop()
@@ -92,7 +99,11 @@ class Program { static void Main(string[] args) { Thread.Sleep(TimeSpan.FromSeco
   if ($Launcher.ExitCode -ne 1) {
     throw "expected launcher exit 1, got $($Launcher.ExitCode): $Output"
   }
-  if ($Output -notmatch "within 2s") {
+  # Defense in depth: even with NormalView forced, tolerate any stray
+  # whitespace/newline/continuation-pipe wrapping by normalizing before the
+  # substring check instead of matching the raw text verbatim.
+  $Normalized = ($Output -replace "[\r\n]", " ") -replace "\s*\|\s*", " " -replace "\s+", " "
+  if ($Normalized -notmatch "within 2s") {
     throw "launcher did not report the configured deadline: $Output"
   }
   if ($Timer.Elapsed.TotalSeconds -gt 10) {

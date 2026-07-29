@@ -49,6 +49,43 @@ $BaseUrl = "http://${UrlHost}:$Port"
 $HealthUrl = "$BaseUrl/.well-known/oauth-protected-resource"
 $HealthResource = "$BaseUrl/mcp"
 
+# Proxy-bypass arguments for the loopback probes below, splatted so the flag is
+# only passed where it exists. -NoProxy is PowerShell 6+ only, but these hooks run
+# under Windows PowerShell 5.1 (pinned by run-powershell.cmd / the MINGW re-exec in
+# start-monk-agent.sh, ENG-441), where it raises ParameterBindingException — which
+# the probes' own catch blocks swallowed, so every health check returned a
+# permanent $false: the agent was killed and respawned every session and the
+# readiness loop below burned its full timeout and exited 1 (ENG-469).
+#
+# Omitting it on 5.1 does NOT reintroduce plugin#8 (loopback probes routed through
+# a user's proxy). Verified on 5.1.19041: .NET Framework ignores
+# http_proxy/https_proxy/all_proxy entirely, and for the system/DefaultWebProxy path
+# it bypasses loopback destinations unconditionally — WebProxy.IsBypassed is $true
+# for 127.0.0.1 and localhost even with BypassProxyOnLocal=$false. On PowerShell 7
+# both of those protections are absent (env proxies are honored, IsBypassed is
+# $false), which is exactly where -NoProxy is still required, so it is still passed.
+#
+# Probed by capability, not by $PSVersionTable: this asks the interpreter that will
+# actually run the call, so it cannot be wrong about a version boundary.
+$ProxyArgs = @{}
+if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("NoProxy")) {
+  $ProxyArgs["NoProxy"] = $true
+}
+
+# A usage error (unknown parameter, missing cmdlet) is a bug in this script, not
+# evidence about the agent's health. The probes below must not translate one into a
+# plausible-looking "agent is down" answer — that is precisely how the -NoProxy
+# regression hid for two weeks. Transport failures still fall through to the
+# caller's own default.
+function Test-ProbeUsageError {
+  param([System.Management.Automation.ErrorRecord]$ErrorRecord)
+  $Exception = $ErrorRecord.Exception
+  if ($Exception -is [System.Management.Automation.ParameterBindingException] -or
+      $Exception -is [System.Management.Automation.CommandNotFoundException]) {
+    throw $ErrorRecord
+  }
+}
+
 New-Item -ItemType Directory -Force -Path $LogDir, $RunDir | Out-Null
 
 # Client whose hook fired this launcher. Order matters: Cursor sets
@@ -69,13 +106,14 @@ $IdeVersion = if ($env:CURSOR_VERSION) { $env:CURSOR_VERSION } else { "" }
 
 function Test-AgentRunning {
   try {
-    $Response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 2 -NoProxy
+    $Response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 2 @ProxyArgs
     # Require the resource field to equal our own MCP endpoint, not merely be
     # present — an unrelated service on the same port could otherwise be
     # mistaken for monk-agent.
     $Document = $Response.Content | ConvertFrom-Json -ErrorAction Stop
     return [string]$Document.resource -ceq $HealthResource
   } catch {
+    Test-ProbeUsageError $_
     return $false
   }
 }
@@ -108,9 +146,10 @@ function Show-SigninNudge {
   $Body = ""
   for ($Attempt = 0; $Attempt -lt 3; $Attempt++) {
     try {
-      $Response = Invoke-WebRequest -Uri $StatusUrl -UseBasicParsing -TimeoutSec 5 -NoProxy
+      $Response = Invoke-WebRequest -Uri $StatusUrl -UseBasicParsing -TimeoutSec 5 @ProxyArgs
       $Body = $Response.Content
     } catch {
+      Test-ProbeUsageError $_
       $Body = ""
     }
     if ($Body) {
@@ -138,8 +177,12 @@ function Show-SigninNudge {
     return
   }
   # $Client is resolved once at the top of the script (Cursor-aware ordering).
+  # Stays fully best-effort (no Test-ProbeUsageError): this line is only reached
+  # after the /auth.json probe above already bound @ProxyArgs successfully on this
+  # interpreter, so a usage error here is unreachable — and throwing would cost the
+  # user the nudge message below, which is the part that actually matters.
   try {
-    Invoke-RestMethod -Uri "$BaseUrl/plugin/nudge?type=signin&client=$Client" -Method Post -TimeoutSec 2 -NoProxy | Out-Null
+    Invoke-RestMethod -Uri "$BaseUrl/plugin/nudge?type=signin&client=$Client" -Method Post -TimeoutSec 2 @ProxyArgs | Out-Null
   } catch {
   }
   $Msg = "monk-agent is running but you are NOT signed in to Monk. The Monk MCP tools require sign-in. If the user asks to deploy, analyze, or operate anything with Monk, first tell them to run /mcp and authenticate the monk MCP server (this signs them in to Monk). Do NOT describe this as a connection or restart problem, and do NOT deploy via Docker or another platform to work around it."
