@@ -108,7 +108,9 @@ register_antigravity_mcp() {
     if command -v jq >/dev/null 2>&1; then
       jq empty "$mcp_cfg" >/dev/null 2>&1 || valid=0
     elif command -v python3 >/dev/null 2>&1; then
-      python3 -c "import json; json.load(open('$mcp_cfg'))" >/dev/null 2>&1 || valid=0
+      python3 -c 'import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    json.load(handle)' "$mcp_cfg" >/dev/null 2>&1 || valid=0
     fi
     if [ "$valid" = "0" ]; then
       echo "Warning: $mcp_cfg is not valid JSON; skipping automatic Antigravity MCP registration." >&2
@@ -122,12 +124,13 @@ register_antigravity_mcp() {
     if command -v jq >/dev/null 2>&1; then
       jq -e '.mcpServers.monk != null' "$mcp_cfg" >/dev/null 2>&1 && already_registered=1
     elif command -v python3 >/dev/null 2>&1; then
-      python3 -c "
+      python3 -c '
 import json, sys
-cfg = json.load(open('$mcp_cfg'))
-servers = cfg.get('mcpServers')
-sys.exit(0 if isinstance(servers, dict) and 'monk' in servers else 1)
-" >/dev/null 2>&1 && already_registered=1
+with open(sys.argv[1], encoding="utf-8") as handle:
+    cfg = json.load(handle)
+servers = cfg.get("mcpServers")
+sys.exit(0 if isinstance(servers, dict) and "monk" in servers else 1)
+' "$mcp_cfg" >/dev/null 2>&1 && already_registered=1
     else
       # No JSON tool available to parse structurally; fall back to the
       # conservative substring guard rather than risk corrupting the file.
@@ -144,17 +147,18 @@ sys.exit(0 if isinstance(servers, dict) and 'monk' in servers else 1)
     fi
   elif command -v python3 >/dev/null 2>&1; then
     if [ "$has_existing" = "1" ]; then
-      python3 -c "
+      python3 -c '
 import json, sys
-cfg = json.load(open('$mcp_cfg'))
-servers = cfg.get('mcpServers')
+with open(sys.argv[1], encoding="utf-8") as handle:
+    cfg = json.load(handle)
+servers = cfg.get("mcpServers")
 if not isinstance(servers, dict):
     servers = {}
-cfg['mcpServers'] = servers
-servers['monk'] = {'serverUrl': '$server_url'}
+cfg["mcpServers"] = servers
+servers["monk"] = {"serverUrl": sys.argv[2]}
 json.dump(cfg, sys.stdout, indent=2)
 print()
-" >"$tmp"
+' "$mcp_cfg" "$server_url" >"$tmp"
     else
       printf '{"mcpServers":{"monk":{"serverUrl":"%s"}}}\n' "$server_url" >"$tmp"
     fi

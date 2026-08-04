@@ -20,7 +20,11 @@ Before acting:
 3. Check `monk.auth.status`, `monk.runtime.status`, and `monk.install.status`.
 4. If signed out, the `monk.*` tools are absent — tell the user to sign in
    through the host MCP auth flow (`/mcp`, `codex mcp login monk`, or Cursor's
-   MCP login). There is no in-band auth tool to call.
+   MCP login). There is no in-band auth tool to call. If they are signed in as the
+   wrong Monk user, `monk.auth.logout` then re-run that flow: a host-side logout
+   alone leaves `monk-agent` signed in and silently reuses the account, and the
+   host may keep listing it as authenticated. Personal-vs-org switching within the
+   same user is `monk.account.select` — not a logout.
 5. If runtime is missing, hand off to `monk-installer`.
 
 If a previous Monk operation may still be running, timed out at the host layer,

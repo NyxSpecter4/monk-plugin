@@ -62,6 +62,10 @@ jobs:
         shell: bash
         run: ./tests/start-monk-agent-readiness-timeout.sh
 
+      - name: Check Antigravity python fallback with apostrophes
+        shell: bash
+        run: ./tests/start-monk-agent-antigravity-python-path.sh
+
   windows:
     name: windows-latest
     runs-on: windows-latest

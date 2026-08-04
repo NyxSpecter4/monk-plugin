@@ -39,7 +39,16 @@ Before deploying:
 4. Confirm auth status with `monk.auth.status` (once the tools are available). If
    signed out, sign in through Antigravity's MCP auth flow (step 1) — that flow
    also establishes the upstream Monk session; there is no in-band tool to start
-   auth.
+   auth. Disconnecting the MCP server host-side clears only Antigravity's own
+   credentials, so `monk-agent` stays signed in to the same Monk user and the
+   next sign-in reuses it silently. To sign in as a different Monk user, call
+   `monk.auth.logout` (approved in the dashboard) and then re-run the flow from
+   step 1 — that time the user picks the account. Antigravity may still list the
+   server as authenticated afterwards, holding a token the agent has revoked, so
+   tell the user to explicitly re-authenticate. Logging out keeps stored secrets
+   and credentials; do not use `monk.agent.clear_state` for this. Switching
+   personal vs org context within the same user is `monk.account.select` instead
+   — a different operation; ask which the user means if it is ambiguous.
 5. Confirm runtime status. `monk-agent` requires Monk CLI and `monkd` locally.
    If missing or broken, use `monk.install.status` to inspect the
    platform-specific `humanExplanation`, `relationships`, `components`,
@@ -57,6 +66,7 @@ Prefer `monk-agent` MCP tools and resources:
 - `monk.agent.clear_state` (only when the user explicitly asks to clear local Monk Agent state)
 - `monk.agent.clear_history` (tidy completed dashboard tasks and resolved approvals; leaves live work and credentials intact)
 - `monk.auth.status`
+- `monk.auth.logout` (to sign out of Monk, or to sign in as a DIFFERENT Monk user — not for personal/org switching within the same account, which is monk.account.select)
 - `monk.install.status`
 - `monk.install.run`
 - `monk.runtime.status`

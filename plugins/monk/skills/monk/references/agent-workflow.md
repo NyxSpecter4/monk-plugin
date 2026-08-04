@@ -11,6 +11,11 @@ take with Monk, check official docs at `docs.monk.io` and use
 3. Check `monk.runtime.status`.
 4. If signed out, the `monk.*` tools are absent — direct the user to the host MCP
    auth flow (`/mcp`, `codex mcp login monk`, or Cursor's MCP login) to sign in.
+   To sign in as a different Monk user, `monk.auth.logout` first (a host-side
+   logout leaves `monk-agent` signed in, so the next sign-in silently reuses the
+   same account), then re-run the host auth flow — the host may still list the
+   server as authenticated, so re-authenticate explicitly. Personal-vs-org
+   context within the same user is `monk.account.select`, not a logout.
 5. If runtime is missing, call `monk.install.status` and surface install steps.
 6. Analyze the project.
 7. For new infrastructure, package-backed services, or MANIFEST/template

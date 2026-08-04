@@ -1,5 +1,28 @@
 $ErrorActionPreference = "Stop"
 
+# Windows PowerShell 5.1 renders an Invoke-WebRequest progress record per read
+# chunk, and that rendering — not the network — dominates a large download. This
+# installer runs inside the blocking SessionStart hook, so the cost is charged
+# directly against the host's startup budget. Measured on 5.1.19041 pulling the
+# 62MB windows agent archive over a ~10MB/s link:
+#
+#   Invoke-WebRequest -OutFile, progress on    46.5s  (1.3 MB/s)
+#   Invoke-WebRequest -OutFile, progress off    6.0s  (10.4 MB/s)
+#   WebClient.DownloadFile                      5.9s  (10.6 MB/s)
+#
+# A 7.7x penalty, ~40s of pure progress rendering. That is enough on its own to
+# blow the VSCode extension's 60s subprocess-init ceiling on any release that
+# ships a new agent binary: an observed upgrade spent 46.5s here and had the
+# agent up 3s after the extension had already given up on the session. Suppressed
+# rather than switched to WebClient because silencing progress already reaches
+# line rate, so the cmdlet's redirect/proxy/TLS handling is worth keeping.
+#
+# Deliberately script-scoped: this process is a short-lived installer whose only
+# console output is the "Installing monk-agent" line, so there is no interactive
+# progress worth preserving. Also covers Expand-Archive below (1.8s, not a
+# bottleneck — left alone).
+$ProgressPreference = "SilentlyContinue"
+
 $InstallDir = if ($env:MONK_AGENT_INSTALL_DIR) { $env:MONK_AGENT_INSTALL_DIR } else {
   Join-Path $HOME ".monk\bin"
 }

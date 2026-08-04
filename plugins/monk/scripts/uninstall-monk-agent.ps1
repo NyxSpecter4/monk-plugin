@@ -96,6 +96,50 @@ function Get-WslDistros {
   }
 }
 
+function Assert-NativeCommandSucceeded {
+  param(
+    [string]$Operation,
+    [int]$ExitCode
+  )
+
+  if ($ExitCode -ne 0) {
+    throw "$Operation failed with exit code $ExitCode."
+  }
+}
+
+# The distro name alone is not proof monk-agent created it -- an unrelated
+# distro can collide with "Ubuntu-Monk", or $env:MONK_AGENT_WSL_DISTRO can
+# point at a pre-existing one. Ownership is only verified when the token
+# written into the distro at provisioning time (see windowsInstallDistroCommand
+# in src/services/install/intents.ts) matches the record kept on the host.
+$OwnerFile = Join-Path $MonkHome "wsl-distro.owner"
+
+function Test-MonkOwnsDistro {
+  param([string]$Distro)
+
+  if (-not (Test-Path $OwnerFile)) {
+    return $false
+  }
+  $record = (Get-Content -Raw $OwnerFile).Trim()
+  $separator = $record.IndexOf("=")
+  if ($separator -lt 0) {
+    return $false
+  }
+  $recordDistro = $record.Substring(0, $separator)
+  $recordToken = $record.Substring($separator + 1).Trim()
+  if ($recordDistro -ne $Distro -or -not $recordToken) {
+    return $false
+  }
+
+  $remoteToken = ""
+  try {
+    $remoteToken = (wsl.exe -d $Distro --user root -- sh -lc "cat /etc/monk-agent.owned 2>/dev/null").Trim()
+  } catch {
+    return $false
+  }
+  return $remoteToken -and $remoteToken -eq $recordToken
+}
+
 function Remove-MonkRuntime {
   $distros = @(Get-WslDistros)
   if (-not $distros.Length) {
@@ -114,10 +158,17 @@ function Remove-MonkRuntime {
     return
   }
 
-  if ($distro -eq "Ubuntu-Monk") {
+  if ($distro -eq "Ubuntu-Monk" -and (Test-MonkOwnsDistro $distro)) {
     wsl.exe --terminate Ubuntu-Monk 2>$null
     wsl.exe --unregister Ubuntu-Monk
+    Assert-NativeCommandSucceeded "Unregistering WSL distro 'Ubuntu-Monk'" $LASTEXITCODE
     return
+  }
+
+  if ($distro -eq "Ubuntu-Monk") {
+    Write-Warning ("Found a WSL distro named 'Ubuntu-Monk' but could not verify monk-agent created it, " +
+      "so it was left in place instead of being unregistered. If this distro belongs to Monk, remove it " +
+      "yourself with 'wsl.exe --unregister Ubuntu-Monk'; otherwise no action is needed.")
   }
 
   $script = @'
@@ -133,6 +184,7 @@ elif command -v dnf >/dev/null 2>&1 && rpm -q monk >/dev/null 2>&1; then
 fi
 '@
   wsl.exe -d $distro --user root -- sh -lc $script
+  Assert-NativeCommandSucceeded "Removing Monk runtime from WSL distro '$distro'" $LASTEXITCODE
 }
 
 Stop-ManagedAgent
