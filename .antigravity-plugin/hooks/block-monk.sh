@@ -38,10 +38,14 @@ fi
 # isolated, JSON's own `\"`/`\\` escaping and shell-level quoting/escaping
 # ("monk", m\onk) both collapse under the same blunt backslash/quote strip
 # (they compose additively here). Then match `monk`/`monkd` in command
-# position, past a short wrapper-command list and an optional leading path.
-# This is a blunt, non-quote-aware strip — see block-monk.ps1 for the
-# tradeoff vs the quote-state-aware primary `monk-agent hook block-monk` path.
-# False positives only ever BLOCK, never allow.
+# position, past an optional wrapper keyword (including `eval`/`xargs`/`awk`/
+# `perl`/`python`/bare or `-c` `bash`/`sh`/`zsh` — ENG-494), an optional
+# `timeout [flags] N` prefix (ENG-492), zero or more `NAME=value` assignment
+# prefixes (ENG-492), and an optional leading path. This is a blunt,
+# non-quote-aware strip — see block-monk.ps1 for the tradeoff vs the
+# quote-state-aware primary `monk-agent hook block-monk` path (which also
+# resolves stacked wrappers and `find -exec monk ...`, neither of which this
+# single-shot ERE attempts). False positives only ever BLOCK, never allow.
 raw_command="$(printf '%s' "$input" |
   grep -Eo '"CommandLine"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' |
   sed -E 's/^"CommandLine"[[:space:]]*:[[:space:]]*"//; s/"$//')"
@@ -52,7 +56,7 @@ raw_command="$(printf '%s' "$input" |
 # to a real newline first (same for \r).
 raw_command="$(printf '%s' "$raw_command" | awk '{gsub(/\\n/, "\n"); gsub(/\\r/, "\r"); print}')"
 normalized="$(printf '%s' "$raw_command" | tr -d '\\' | tr -d '"' | tr -d "'")"
-if printf '%s' "$normalized" | grep -Eq '(^|[;&|`(){}])[[:space:]]*(sudo|command|env|exec|nohup|time|nice)?[[:space:]]*([^[:space:];&|`(){}]*[/\\])?monkd?(\.(exe|cmd|bat|ps1))?([[:space:]]|$)'; then
+if printf '%s' "$normalized" | grep -Eq '(^|[;&|`(){}])[[:space:]]*(sudo|command|env|exec|nohup|time|nice|eval|xargs|awk|perl|python[0-9.]*|(bash|sh|zsh)([[:space:]]+-c)?)?[[:space:]]*(timeout([[:space:]]+-[A-Za-z]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+[0-9.]+[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|`(){}]*[/\\])?monkd?(\.(exe|cmd|bat|ps1))?([[:space:]]|$)'; then
   cat <<'JSON'
 {
   "decision": "deny",

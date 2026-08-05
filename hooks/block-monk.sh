@@ -36,11 +36,15 @@ fi
 # entirely. Once isolated, JSON's own `\"`/`\\` escaping and shell-level
 # quoting/escaping ("monk", m\onk) both collapse under the same blunt
 # backslash/quote strip (they compose additively here), so one pass handles
-# both. Then match `monk`/`monkd` in command position, past a short
-# wrapper-command list and an optional leading path — so `monkey` is not
-# matched. This is a blunt, non-quote-aware strip, unlike the primary
-# `monk-agent hook block-monk` path — good enough for a degraded fallback
-# that only runs when the binary itself is missing.
+# both. Then match `monk`/`monkd` in command position, past an optional
+# wrapper keyword (including `eval`/`xargs`/`awk`/`perl`/`python`/bare or
+# `-c` `bash`/`sh`/`zsh` — ENG-494), an optional `timeout [flags] N` prefix
+# (ENG-492), zero or more `NAME=value` assignment prefixes (ENG-492), and an
+# optional leading path — so `monkey` is not matched. Unlike the primary
+# `monk-agent hook block-monk` tokenizer, this single-shot ERE only strips one
+# wrapper token (no stacking, e.g. `sudo env monk`) and never resolves the
+# `find -exec monk ...` shape — a blunt, best-effort strip that is good enough
+# for a degraded fallback that only runs when the binary itself is missing.
 # False positives only ever BLOCK, never allow, which is the safe direction.
 raw_command="$(printf '%s' "$input" |
   grep -Eo '"command"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' |
@@ -52,7 +56,7 @@ raw_command="$(printf '%s' "$input" |
 # below unless restored to a real newline first (same for \r).
 raw_command="$(printf '%s' "$raw_command" | awk '{gsub(/\\n/, "\n"); gsub(/\\r/, "\r"); print}')"
 normalized="$(printf '%s' "$raw_command" | tr -d '\\' | tr -d '"' | tr -d "'")"
-if printf '%s' "$normalized" | grep -Eq '(^|[;&|`(){}])[[:space:]]*(sudo|command|env|exec|nohup|time|nice)?[[:space:]]*([^[:space:];&|`(){}]*[/\\])?monkd?(\.(exe|cmd|bat|ps1))?([[:space:]]|$)'; then
+if printf '%s' "$normalized" | grep -Eq '(^|[;&|`(){}])[[:space:]]*(sudo|command|env|exec|nohup|time|nice|eval|xargs|awk|perl|python[0-9.]*|(bash|sh|zsh)([[:space:]]+-c)?)?[[:space:]]*(timeout([[:space:]]+-[A-Za-z]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+[0-9.]+[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|`(){}]*[/\\])?monkd?(\.(exe|cmd|bat|ps1))?([[:space:]]|$)'; then
   cat <<'JSON'
 {
   "hookSpecificOutput": {

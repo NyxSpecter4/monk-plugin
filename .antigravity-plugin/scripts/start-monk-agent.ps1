@@ -30,6 +30,7 @@ $MonkHome = if ($env:MONK_AGENT_HOME) { $env:MONK_AGENT_HOME } else { Join-Path 
 # PowerShell counterpart of the plugin-version.sh source in start-monk-agent.sh.
 $PluginVersionScript = Join-Path $ScriptDir "plugin-version.ps1"
 if (Test-Path $PluginVersionScript) { . $PluginVersionScript }
+$PluginVersion = if ($env:MONK_PLUGIN_VERSION) { $env:MONK_PLUGIN_VERSION } else { "" }
 
 $DataDir = Join-Path $MonkHome "agent\launcher"
 $LogDir = Join-Path $DataDir "logs"
@@ -115,6 +116,55 @@ function Test-AgentRunning {
   } catch {
     Test-ProbeUsageError $_
     return $false
+  }
+}
+
+# Register monk in Antigravity's global MCP config if ~/.gemini/config/ exists.
+# POSIX parity: start-monk-agent.sh has had register_antigravity_mcp() since
+# ENG-391/ENG-393/ENG-395/ENG-402; this launcher had no equivalent at all
+# (ENG-451). Idempotent — skips if already registered at the current URL, and
+# refreshes a stale URL from a prior host/port. Uses ConvertFrom-Json /
+# ConvertTo-Json (always available in Windows PowerShell 5.1+) rather than
+# jq/python3 shell-outs.
+function Register-AntigravityMcp {
+  $ConfigDir = Join-Path $HOME ".gemini\config"
+  if (-not (Test-Path $ConfigDir)) { return }
+
+  $ConfigPath = Join-Path $ConfigDir "mcp_config.json"
+  $ServerUrl = $HealthResource
+  if ((Test-Path $ConfigPath) -and (Get-Item $ConfigPath).Length) {
+    try {
+      $Config = Get-Content -Raw $ConfigPath | ConvertFrom-Json
+    } catch {
+      Write-Warning "Could not register Monk MCP server because $ConfigPath is not valid JSON."
+      return
+    }
+    if ($null -eq $Config -or $Config.GetType().FullName -ne "System.Management.Automation.PSCustomObject") {
+      Write-Warning "Could not register Monk MCP server because $ConfigPath is not a JSON object."
+      return
+    }
+  } else {
+    $Config = [pscustomobject]@{}
+  }
+  if ($null -eq $Config.mcpServers -or $Config.mcpServers.GetType().FullName -ne "System.Management.Automation.PSCustomObject") {
+    Add-Member -InputObject $Config -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) -Force
+  }
+  if ($Config.mcpServers.PSObject.Properties.Name -contains "monk") {
+    if ($Config.mcpServers.monk.serverUrl -eq $ServerUrl) { return }
+    if ($null -ne $Config.mcpServers.monk -and $Config.mcpServers.monk.GetType().FullName -eq "System.Management.Automation.PSCustomObject") {
+      Add-Member -InputObject $Config.mcpServers.monk -NotePropertyName serverUrl -NotePropertyValue $ServerUrl -Force
+    } else {
+      $Config.mcpServers.monk = [pscustomobject]@{ serverUrl = $ServerUrl }
+    }
+  } else {
+    Add-Member -InputObject $Config.mcpServers -NotePropertyName monk -NotePropertyValue ([pscustomobject]@{ serverUrl = $ServerUrl })
+  }
+  $TempPath = "$ConfigPath.tmp-$PID"
+  try {
+    $Config | ConvertTo-Json -Depth 100 | Set-Content -Encoding UTF8 $TempPath
+    Move-Item -Force $TempPath $ConfigPath
+  } finally {
+    Remove-Item -Force $TempPath -ErrorAction SilentlyContinue
   }
 }
 
@@ -216,6 +266,22 @@ function Get-FileSha256 {
   return ([System.BitConverter]::ToString($Hash) -replace "-", "").ToLowerInvariant()
 }
 
+function Test-SameFilePath {
+  param([string]$Actual, [string]$Expected)
+  if (-not $Actual -or -not $Expected) {
+    return $false
+  }
+  try {
+    return [string]::Equals(
+      [IO.Path]::GetFullPath($Actual),
+      [IO.Path]::GetFullPath($Expected),
+      [StringComparison]::OrdinalIgnoreCase
+    )
+  } catch {
+    return $false
+  }
+}
+
 function Stop-ManagedAgent {
   if (-not (Test-Path $PidFile)) {
     return
@@ -247,7 +313,7 @@ function Stop-ManagedAgent {
     $ProcessPath = ""
   }
 
-  if (-not $ProcessPath -or ([IO.Path]::GetFileName($ProcessPath) -ieq "monk-agent.exe")) {
+  if (Test-SameFilePath $ProcessPath $AgentPath) {
     Stop-Process -Id $OldProcess.Id -Force -ErrorAction SilentlyContinue
     try {
       Wait-Process -Id $OldProcess.Id -Timeout 10 -ErrorAction SilentlyContinue
@@ -277,9 +343,14 @@ if (Test-Path $TelemetryHelper) {
 # `exit` points need no explicit unlock.
 $LauncherMutex = New-Object System.Threading.Mutex($false, "Local\monk-agent-launcher-$Port")
 try {
-  [void]$LauncherMutex.WaitOne([TimeSpan]::FromSeconds(190))
+  $LauncherMutexAcquired = $LauncherMutex.WaitOne([TimeSpan]::FromSeconds(190))
 } catch [System.Threading.AbandonedMutexException] {
   # A previous holder died mid-start; we now own the mutex and continue.
+  $LauncherMutexAcquired = $true
+}
+if (-not $LauncherMutexAcquired) {
+  Write-Error "Timed out waiting for another monk-agent launcher on port $Port to finish."
+  exit 1
 }
 
 $ManagedAgentPath = Join-Path $InstallDir "monk-agent.exe"
@@ -340,7 +411,8 @@ function Test-BackgroundStateConfigured {
     "auth_url=$AuthUrl",
     "auth_client_id=$AuthClientId",
     "auth_audience=$AuthAudience",
-    "autospin_url=$AutospinUrl"
+    "autospin_url=$AutospinUrl",
+    "plugin_version=$PluginVersion"
   )
   $Lines = $State -split "`r?`n"
   foreach ($Line in $Expected) {
@@ -352,6 +424,7 @@ function Test-BackgroundStateConfigured {
 }
 
 if (-not $AgentUpdated -and (Test-BackgroundStateConfigured) -and (Test-AgentRunning)) {
+  Register-AntigravityMcp
   Show-SigninNudge
   exit 0
 }
@@ -382,12 +455,14 @@ $Process.Id | Set-Content -NoNewline $PidFile
   "auth_url=$AuthUrl",
   "auth_client_id=$AuthClientId",
   "auth_audience=$AuthAudience",
-  "autospin_url=$AutospinUrl"
+  "autospin_url=$AutospinUrl",
+  "plugin_version=$PluginVersion"
 ) -join "`n" | Set-Content -NoNewline $StateFile
 
 $ReadyTimer = [System.Diagnostics.Stopwatch]::StartNew()
 while ($ReadyTimer.Elapsed.TotalSeconds -lt $ReadyTimeoutSec) {
   if (Test-AgentRunning) {
+    Register-AntigravityMcp
     Show-SigninNudge
     exit 0
   }

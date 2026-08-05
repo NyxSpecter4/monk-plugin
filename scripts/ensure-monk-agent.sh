@@ -63,12 +63,12 @@ if command -v flock >/dev/null 2>&1; then
 fi
 
 if [ "$auto_update" = "0" ] || [ "$auto_update" = "false" ]; then
-  if command -v monk-agent >/dev/null 2>&1; then
-    command -v monk-agent
-    exit 0
-  fi
   if [ -x "$target" ]; then
     printf '%s\n' "$target"
+    exit 0
+  fi
+  if command -v monk-agent >/dev/null 2>&1; then
+    command -v monk-agent
     exit 0
   fi
 fi

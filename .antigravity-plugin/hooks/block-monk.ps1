@@ -19,31 +19,94 @@ if ($env:OS -ne 'Windows_NT' -and (Get-Command bash -ErrorAction SilentlyContinu
 $InstallDir = if ($env:MONK_AGENT_INSTALL_DIR) { $env:MONK_AGENT_INSTALL_DIR } else { Join-Path $HOME ".monk\bin" }
 $agent = if ($env:MONK_AGENT_PATH) { $env:MONK_AGENT_PATH } else { Join-Path $InstallDir "monk-agent.exe" }
 
-# Let the binary read the hook payload straight from stdin. Reading it into a
-# PowerShell string first and re-piping it corrupts non-ASCII bytes (e.g. a
-# leading UTF-8 BOM) under an OEM console code page - which the cmd.exe launcher
-# sets - so the binary would get unparseable JSON. The binary reads raw UTF-8
-# (BOM-tolerant) from the inherited stdin and is unaffected.
+# Buffer stdin as bytes so the helper receives the original UTF-8 payload
+# without a PowerShell console-code-page round trip (re-piping a PowerShell
+# string corrupts non-ASCII bytes, e.g. a leading UTF-8 BOM, under the OEM
+# code page the cmd.exe launcher sets). Keeping the bytes also lets the
+# native parser make the decision if the helper fails or emits an invalid
+# response.
+$inputStream = [Console]::OpenStandardInput()
+$inputBuffer = New-Object byte[] 4096
+$payloadStream = New-Object System.IO.MemoryStream
+while (($bytesRead = $inputStream.Read($inputBuffer, 0, $inputBuffer.Length)) -gt 0) {
+  $payloadStream.Write($inputBuffer, 0, $bytesRead)
+}
+$hookBytes = $payloadStream.ToArray()
+$payloadStream.Dispose()
+
 if (Test-Path $agent) {
-  & $agent hook block-monk --format antigravity
-  exit $LASTEXITCODE
+  # Treat the helper as authoritative only when it succeeds and emits a
+  # decision. An interrupted update, incompatible binary, or startup failure
+  # must not turn the guard off: discard the helper error and use the native
+  # parser below. A successful empty response also falls through safely; the
+  # fallback permits ordinary commands and still blocks direct `monk` calls.
+  $agentProcess = $null
+  $agentText = $null
+  $agentExitCode = $null
+  try {
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $agent
+    $startInfo.Arguments = "hook block-monk --format antigravity"
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+
+    $agentProcess = New-Object System.Diagnostics.Process
+    $agentProcess.StartInfo = $startInfo
+    [void]$agentProcess.Start()
+    $outputTask = $agentProcess.StandardOutput.ReadToEndAsync()
+    $errorTask = $agentProcess.StandardError.ReadToEndAsync()
+    $agentProcess.StandardInput.BaseStream.Write($hookBytes, 0, $hookBytes.Length)
+    $agentProcess.StandardInput.BaseStream.Close()
+    $agentProcess.WaitForExit()
+    $agentText = $outputTask.GetAwaiter().GetResult()
+    [void]$errorTask.GetAwaiter().GetResult()
+    $agentExitCode = $agentProcess.ExitCode
+  } catch {
+    $agentText = $null
+  } finally {
+    if ($agentProcess) {
+      $agentProcess.Dispose()
+    }
+  }
+
+  if ($agentExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($agentText)) {
+    try {
+      $agentDecision = $agentText | ConvertFrom-Json
+    } catch {
+      $agentDecision = $null
+    }
+    if ($agentDecision.decision -eq "deny") {
+      Write-Output $agentText
+      exit 0
+    }
+  }
 }
 
-# Fallback: binary unavailable. Read stdin as UTF-8 (BOM stripped), match `monk`.
-$reader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
-$hookInput = $reader.ReadToEnd()
+# Fallback: decode the buffered UTF-8 payload and strip a leading BOM before
+# matching `monk`.
+$hookInput = [System.Text.Encoding]::UTF8.GetString($hookBytes)
+if ($hookInput.Length -gt 0 -and $hookInput[0] -eq [char]0xFEFF) {
+  $hookInput = $hookInput.Substring(1)
+}
 try { $command = ($hookInput | ConvertFrom-Json).toolCall.args.CommandLine } catch { exit 0 }
 if (-not $command) { exit 0 }
 
-# Shell quoting/escaping ("monk", m\onk) and a short wrapper-command list
-# don't change what actually runs, so strip backslashes/quotes before
-# matching and recognize `monkd` + a leading forward-slash path. Blunt,
-# non-quote-aware strip — known gap versus the primary `monk-agent hook
-# block-monk` path: a backslash-separated Windows path loses its separator
-# to the strip here and isn't detected (see plugin/static/claude/hooks/
+# Shell quoting/escaping ("monk", m\onk) and a wrapper-command list
+# (sudo/command/env/exec/eval/xargs/awk/perl/python/nohup/time/bare-or--c
+# bash|sh|zsh/powershell -Command/cmd /c — ENG-494), an optional
+# `timeout [flags] N` prefix (ENG-492), and zero or more leading
+# `NAME=value` assignments (ENG-492) don't change what actually runs, so
+# strip backslashes/quotes before matching and recognize `monkd` + a leading
+# forward-slash path. Blunt, non-quote-aware strip — known gap versus the
+# primary `monk-agent hook block-monk` path: a backslash-separated Windows
+# path loses its separator to the strip here and isn't detected, nor is
+# `find -exec monk ...` or stacked wrappers (see plugin/static/claude/hooks/
 # block-monk.ps1 for the same tradeoff, spelled out in more detail).
 $normalized = $command.Replace('\', '').Replace('"', '').Replace("'", '')
-if ($normalized -match '(^|[\r\n;&|`({])\s*(sudo|command|env|exec|powershell(\.exe)?\s+-(Command|c)|cmd(\.exe)?\s+/c)?\s*([^\s;&|`(){}]*[\\/])?monkd?(\.(exe|cmd|bat|ps1))?(\s|$)') {
+if ($normalized -match '(^|[\r\n;&|`({])\s*(sudo|command|env|exec|nohup|time|eval|xargs|awk|perl|python[0-9.]*|powershell(\.exe)?\s+-(Command|c)|cmd(\.exe)?\s+/c|(bash|sh|zsh)(\s+-c)?)?\s*(timeout(\s+-[A-Za-z]+(\s+\S+)?)*\s+[0-9.]+\s+)?([A-Za-z_][A-Za-z0-9_]*=\S*\s+)*([^\s;&|`(){}]*[\\/])?monkd?(\.(exe|cmd|bat|ps1))?(\s|$)') {
   @{
     decision = "deny"
     reason   = "Blocked: do not shell out to the ``monk`` CLI - it desyncs the cluster state Monk manages. Use the monk-agent MCP tools instead."
