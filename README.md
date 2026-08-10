@@ -1,6 +1,6 @@
 # Monk plugin for AI coding agents
 
-> ### 🐬 Bug bounty: July 17–August 10, 2026
+> ### 🐬 Bug bounty: July 17–August 31, 2026
 >
 > This plugin is new and we want it proven in anger. Install it, take a real
 > app through build, deploy, and operate, and file what breaks as issues on

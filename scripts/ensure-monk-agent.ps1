@@ -162,7 +162,39 @@ try {
     $InstallerMutexOwned = $true
   }
 
-  Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumTmp
+  # Windows PowerShell 5.1 otherwise delegates response parsing to the Internet
+  # Explorer engine, which is unavailable on Server Core and can be uninitialized
+  # on fresh desktop profiles. Downloads are files, so always use the independent
+  # basic parser (ENG-501).
+  try {
+    Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumTmp -UseBasicParsing
+  } catch {
+    # A transient failure fetching the update-check sidecar must not abort a
+    # cold start when a previously-verified local binary is already installed
+    # (ENG-422) -- only fall back when that binary's hash still matches the
+    # checksum recorded at install time.
+    $Installed = ""
+    if ((Test-Path $Target) -and (Test-Path $ChecksumInstalled)) {
+      try {
+        $Installed = ((Get-Content -Raw $ChecksumInstalled).Trim() -split "\s+")[0].ToLowerInvariant()
+      } catch {
+        $Installed = ""
+      }
+    }
+
+    $TargetSize = if (Test-Path $Target) { (Get-Item $Target).Length } else { 0 }
+    $ActualInstalled = if ($TargetSize -gt 0) { Get-FileSha256 $Target } else { "" }
+    if ($TargetSize -gt 0 -and
+        $Installed -match "^[0-9a-f]{64}$" -and
+        $ActualInstalled -eq $Installed) {
+      Remove-Item -Force $ChecksumTmp -ErrorAction SilentlyContinue
+      Write-Warning "Unable to check for monk-agent updates; using the previously checksummed installation at $Target."
+      Write-Output $Target
+      exit 0
+    }
+
+    throw
+  }
 
   $Expected = ((Get-Content -Raw $ChecksumTmp).Trim() -split "\s+")[0].ToLowerInvariant()
 
@@ -176,7 +208,7 @@ try {
   }
 
   Write-Host "Installing monk-agent from $Url"
-  Invoke-WebRequest -Uri $Url -OutFile $ArchiveTmp
+  Invoke-WebRequest -Uri $Url -OutFile $ArchiveTmp -UseBasicParsing
 
   $Actual = Get-FileSha256 $ArchiveTmp
   if ($Actual -ne $Expected) {
