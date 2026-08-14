@@ -110,6 +110,9 @@ Blocked shell work:
 - Cloud deploys, destructive actions, credential changes, shell access, and
   cost-bearing operations must be performed through privileged `monk-agent`
   tools that open their own approval flow.
+- Never call the dashboard's session/approval endpoints to approve or sign in
+  on the user's behalf. Opening the link for them to decide is fine; deciding
+  for them is not.
 - If one of those operations times out or the approval state is unclear, read
   `monk://workspace/feed` first. It is the read-only durable ledger of action
   and prompt items, including dashboard URLs, and helps avoid duplicate work.

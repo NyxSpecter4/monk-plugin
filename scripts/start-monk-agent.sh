@@ -106,35 +106,38 @@ register_antigravity_mcp() {
     # produce a warning, not abort the launcher after the health check passed.
     valid=1
     if command -v jq >/dev/null 2>&1; then
-      jq empty "$mcp_cfg" >/dev/null 2>&1 || valid=0
+      jq -e 'type == "object"' "$mcp_cfg" >/dev/null 2>&1 || valid=0
     elif command -v python3 >/dev/null 2>&1; then
       python3 -c 'import json, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
-    json.load(handle)' "$mcp_cfg" >/dev/null 2>&1 || valid=0
+    cfg = json.load(handle)
+raise SystemExit(0 if isinstance(cfg, dict) else 1)' "$mcp_cfg" >/dev/null 2>&1 || valid=0
     fi
     if [ "$valid" = "0" ]; then
-      echo "Warning: $mcp_cfg is not valid JSON; skipping automatic Antigravity MCP registration." >&2
+      echo "Warning: $mcp_cfg is not a valid JSON object; skipping automatic Antigravity MCP registration." >&2
       printf '  Add manually if desired: {"mcpServers":{"monk":{"serverUrl":"%s"}}}\n' "$server_url" >&2
       return 0
     fi
-    # Check the structured .mcpServers.monk key, not a whole-file text search —
-    # an unrelated field whose value happens to be the string "monk" must not
-    # be mistaken for an existing registration.
+    # Check the structured .mcpServers.monk.serverUrl value against the current
+    # host/port, not just presence of the key — a stale registration from a
+    # prior host/port must be refreshed, not mistaken for an existing one.
     already_registered=0
     if command -v jq >/dev/null 2>&1; then
-      jq -e '.mcpServers.monk != null' "$mcp_cfg" >/dev/null 2>&1 && already_registered=1
+      jq -e --arg u "$server_url" '.mcpServers.monk.serverUrl == $u' "$mcp_cfg" >/dev/null 2>&1 &&
+        already_registered=1
     elif command -v python3 >/dev/null 2>&1; then
       python3 -c '
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     cfg = json.load(handle)
 servers = cfg.get("mcpServers")
-sys.exit(0 if isinstance(servers, dict) and "monk" in servers else 1)
-' "$mcp_cfg" >/dev/null 2>&1 && already_registered=1
+monk = servers.get("monk") if isinstance(servers, dict) else None
+sys.exit(0 if isinstance(monk, dict) and monk.get("serverUrl") == sys.argv[2] else 1)
+' "$mcp_cfg" "$server_url" >/dev/null 2>&1 && already_registered=1
     else
       # No JSON tool available to parse structurally; fall back to the
       # conservative substring guard rather than risk corrupting the file.
-      grep -q '"monk"' "$mcp_cfg" 2>/dev/null && already_registered=1
+      grep -Fq "\"$server_url\"" "$mcp_cfg" 2>/dev/null && already_registered=1
     fi
     [ "$already_registered" = "1" ] && return 0
   fi

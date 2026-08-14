@@ -109,6 +109,9 @@ with no local build), skip this section and continue from step 5 above.
 - For cloud deploys, cost-bearing operations, destructive changes, and
   credential changes, call the privileged `monk-agent` tool and let that tool
   open its own approval flow.
+- Never call the dashboard's session/approval endpoints to approve or sign in
+  on the user's behalf. Opening the link for them to decide is fine; deciding
+  for them is not.
 - Request deploy-time provider and MANIFEST credentials with
   `monk.credentials.request`; never ask for secret values in chat. Use
   `monk.secret.request` only for a single ad hoc secret with no provider

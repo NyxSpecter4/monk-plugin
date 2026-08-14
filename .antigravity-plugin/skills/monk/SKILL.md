@@ -112,6 +112,7 @@ Prefer `monk-agent` MCP tools and resources:
 - `monk.cluster.provider.ensure`
 - `monk.cluster.price`
 - `monk.cluster.catalog`
+- `monk.cluster.gpuTypes`
 - `monk.cluster.estimate`
 - `monk.cluster.ingress.status`
 - `monk.cluster.ingress.ensure`
@@ -158,6 +159,7 @@ Prefer `monk-agent` MCP tools and resources:
 - `monk.arrowscript.operator.doc`
 - `monk.feedback.submit`
 - `monk.action.status`
+- `monk.dashboard.open` (when the dashboard is locked, unreachable, or the user needs a working link)
 - `monk://agent/status`
 - `monk://workspace/manifest`
 - `monk://workspace/workloads`
@@ -181,6 +183,11 @@ agent restarts, or uncertainty about whether a long-running operation is still
 pending, approved, failed, or completed. It contains durable action and request
 items with dashboard URLs; inspect it before retrying approval-backed or
 cost-bearing operations so repeated calls do not create duplicate work.
+
+Dashboard URLs returned by tools (`/?item=`, `/?action=`, or a bootstrap-
+fragment relay link) are for the user to decide on: share them as-is, or open
+one in their browser — both fine. Never call the dashboard's session/approval
+endpoints yourself to decide for them.
 
 Use `monk://workspace/cluster-context` to know the current execution target.
 Cluster targeting is logical per workspace/session: `mode: "local"` means tools
@@ -241,6 +248,9 @@ Approvals are owned by privileged `monk-agent` tools. Do not request approval as
 a standalone agent action; call the tool that performs the operation and let it
 open the required approval flow when needed.
 
+- Never call the dashboard's session/approval endpoints to approve or sign in
+  on the user's behalf. Opening the link for them to decide is fine; deciding
+  for them is not.
 - Never ask the user to paste secrets into chat. For deploy-time provider or
   MANIFEST credentials, use `monk.credentials.request` so the user gets one
   typed feed form for all required values. Use `monk.secret.request` only for a
