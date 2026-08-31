@@ -11,6 +11,14 @@
 
 set -eu
 
+# Output format: "claude" (default, also Cursor) emits a superset with
+# hookSpecificOutput; "codex" emits ONLY the documented PreToolUse fields
+# (Codex drops output with any unknown top-level key — see monk-diagnostics.sh
+# for the same tradeoff). The Codex hook passes --format codex via
+# block-monk-codex.sh; others use the default.
+fmt="claude"
+if [ "${1:-}" = "--format" ] && [ -n "${2:-}" ]; then fmt="$2"; fi
+
 # On Windows the .ps1 sibling owns this hook. A host may spawn .sh hooks in an
 # interactive git-bash window (e.g. Cursor on Windows) whose stdin is a TTY,
 # where `cat` would block forever. Bow out on Windows-flavored bash, or whenever
@@ -22,7 +30,7 @@ input="$(cat)"
 
 agent="${MONK_AGENT_PATH:-${MONK_AGENT_INSTALL_DIR:-"$HOME/.monk/bin"}/monk-agent}"
 if [ -x "$agent" ]; then
-  if printf '%s' "$input" | "$agent" hook block-monk --format claude; then
+  if printf '%s' "$input" | "$agent" hook block-monk --format "$fmt"; then
     exit 0
   fi
 fi
@@ -56,8 +64,16 @@ raw_command="$(printf '%s' "$input" |
 # below unless restored to a real newline first (same for \r).
 raw_command="$(printf '%s' "$raw_command" | awk '{gsub(/\\n/, "\n"); gsub(/\\r/, "\r"); print}')"
 normalized="$(printf '%s' "$raw_command" | tr -d '\\' | tr -d '"' | tr -d "'")"
-if printf '%s' "$normalized" | grep -Eq '(^|[;&|`(){}])[[:space:]]*(sudo|command|env|exec|nohup|time|nice|eval|xargs|awk|perl|python[0-9.]*|(bash|sh|zsh)([[:space:]]+-c)?)?[[:space:]]*(timeout([[:space:]]+-[A-Za-z]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+[0-9.]+[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|`(){}]*[/\\])?monkd?(\.(exe|cmd|bat|ps1))?([[:space:]]|$)'; then
-  cat <<'JSON'
+if printf '%s' "$normalized" | grep -Eq '(^|[;&|\`(){}])[[:space:]]*(sudo|command|env|exec|nohup|time|nice|eval|xargs|awk|perl|python[0-9.]*|(bash|sh|zsh)([[:space:]]+-c)?)?[[:space:]]*(timeout([[:space:]]+-[A-Za-z]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+[0-9.]+[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|\`(){}]*[/\\])?monkd?(\\.(exe|cmd|bat|ps1))?([[:space:]]|$)'; then
+  if [ "$fmt" = "codex" ]; then
+    cat <<'JSON'
+{
+  "decision": "deny",
+  "reason": "Blocked: do not shell out to the `monk` CLI — it desyncs the cluster state Monk manages. Use the monk-agent MCP tools instead."
+}
+JSON
+  else
+    cat <<'JSON'
 {
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
@@ -66,6 +82,7 @@ if printf '%s' "$normalized" | grep -Eq '(^|[;&|`(){}])[[:space:]]*(sudo|command
   }
 }
 JSON
+  fi
   exit 0
 fi
 
