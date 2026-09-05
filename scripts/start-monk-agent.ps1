@@ -161,7 +161,8 @@ function Register-AntigravityMcp {
   }
   $TempPath = "$ConfigPath.tmp-$PID"
   try {
-    $Config | ConvertTo-Json -Depth 100 | Set-Content -Encoding UTF8 $TempPath
+    $Json = $Config | ConvertTo-Json -Depth 100
+    [System.IO.File]::WriteAllText($TempPath, $Json, (New-Object System.Text.UTF8Encoding $false))
     Move-Item -Force $TempPath $ConfigPath
   } finally {
     Remove-Item -Force $TempPath -ErrorAction SilentlyContinue
