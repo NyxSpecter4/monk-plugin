@@ -1,4 +1,4 @@
-# Monk plugin for AI coding agents
+﻿# Monk plugin for AI coding agents
 
 > ### 🐬 Bug bounty: July 17–August 31, 2026
 >
@@ -157,6 +157,13 @@ To remove everything later:
 - Documentation: <https://docs.monk.io>
 - Accounts and product: <https://monk.io>
 
+---
+
+## From the Kinetigor engine room
+
+Built at [BountyWarz](https://bountywarz.com) — the cyber-education platform behind this tool. More from the same studio: [kin-security-action](https://github.com/NyxSpecter4/kin-security-action) · [kin-security-plugin](https://github.com/NyxSpecter4/kin-security-plugin) · [monk-plugin](https://github.com/NyxSpecter4/monk-plugin) · [Kinetigor Desk](https://kinetigor.com).
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
+
