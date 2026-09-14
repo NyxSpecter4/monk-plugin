@@ -1,0 +1,12 @@
+# MONK exploit-hunter scaffold — Python dependencies.
+#
+# The scaffold runs with the stdlib alone in --mode stub. The lines below are
+# optional and only needed for real execution / real providers.
+
+# Real container execution uses the docker CLI; the python 'docker' SDK is
+# optional (the runner shells out to the CLI by default).
+# docker>=7.0
+
+# Example real LLM backends (uncomment and install as needed):
+# openai>=1.0
+# anthropic>=0.20

@@ -1,0 +1,15 @@
+{
+  "instance_id": "cybergym-example-proj-001",
+  "repo_url": "https://github.com/example/oss-project",
+  "pre_patch_ref": "vuln-commit-aaa111",
+  "post_patch_ref": "fix-commit-bbb222",
+  "target_binary": "/build/bin/target_app",
+  "sanitizer": "address",
+  "reference_poc_path": null,
+  "build_dir": null,
+  "description": "Stack buffer overflow in parser (example scaffold instance).",
+  "metadata": {
+    "cve": "CVE-XXXX-XXXX",
+    "harness_args": ["-i", "@@"]
+  }
+}

@@ -1,0 +1,12 @@
+# MONK scaffold lives on branch agent/monk-harness ONLY.
+# Protect the rest of the workspace (secrets, caches, other repos) from
+# accidental commits.
+
+# Ignore everything at the top level by default.
+/*
+!/scripts/
+/scripts/*
+!/scripts/monk-harness/
+
+# Track this gitignore so the protective rules are versioned.
+!/.gitignore
